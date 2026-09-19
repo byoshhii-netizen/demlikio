@@ -1,5 +1,7 @@
 # Demlik Online
 
+Bu proje `Demlikistan` klasörünün içindedir. Railway servisinde Root Directory değerini `/Demlikistan` yapın.
+
 1. Railway'de bu klasörü servis olarak deploy edin.
 2. PostgreSQL servisini ekleyin ve `DATABASE_URL` değişkenini Demlik servisine bağlayın.
 3. `DEMLIK_ADMIN_PASSWORD` değişkenini güçlü bir admin parolasıyla ayarlayın.
