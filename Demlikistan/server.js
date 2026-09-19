@@ -93,6 +93,8 @@ function requireAdmin(req, res, next) {
 app.use(express.json({ limit: '32kb' }));
 app.use(express.static(__dirname));
 
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'günceldata.html')));
+
 app.get('/health', async (req, res) => {
   if (!requireDatabase(res)) return;
   try { await pool.query('SELECT 1'); res.json({ ok: true }); }
