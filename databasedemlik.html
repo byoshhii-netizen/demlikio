@@ -1,0 +1,1441 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Demlik</title>
+    <link rel="icon" type="image/png" href="logo.png" />
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&display=swap" rel="stylesheet">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body, html { width: 100%; height: 100%; overflow: hidden; background-color: #030107; font-family: 'Orbitron', sans-serif; user-select: none; }
+        canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; }
+    </style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+function resizeCanvas() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// --- LOCAL STORAGE ---
+function getSavedData(key, defaultValue) { const saved = localStorage.getItem(key); return saved !== null ? JSON.parse(saved) : defaultValue; }
+function saveData(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
+
+let totalCoins = getSavedData('dem_total_coins', 0);
+let hasDiamondKatana = getSavedData('dem_has_diamond', false);
+let diamondDurability = getSavedData('dem_diamond_durability', 100);
+let bombCount = getSavedData('dem_bomb_count', 0);
+let potionCount = getSavedData('dem_potion_count', 0);
+let highScore = getSavedData('dem_high_score', 0);
+let tutorialShown = getSavedData('dem_tutorial_shown', false);
+
+// Tutorial açık/kapalı kontrolü
+let showTutorial = !tutorialShown; // ilk girişte göster
+
+let currentLang = getSavedData('dem_lang', 'TR');
+let musicVolume = getSavedData('dem_music_volume', 0.5);
+let sfxVolume = getSavedData('dem_sfx_volume', 0.5);
+let isMuted = getSavedData('dem_muted', false);
+
+// --- MÜZİK DOSYALARI (yerel) ---
+const MENU_MUSIC = "https://res.cloudinary.com/dahj5lxvv/video/upload/v1784245915/m%C3%BCzik1_ll86tm.mp3";
+const GAME_MUSIC = "https://res.cloudinary.com/dahj5lxvv/video/upload/v1784245915/m%C3%BCzik2_spltqg.mp3";
+
+let bgAudio = new Audio();
+bgAudio.loop = true;
+bgAudio.crossOrigin = "anonymous";
+let audioCtx = null;
+let currentMusicState = "MENU";
+let isMusicLoaded = false;
+let activeAudioSrc = "";
+
+function initAudio() {
+    if (!audioCtx) { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (!isMusicLoaded) {
+        bgAudio.src = MENU_MUSIC;
+        bgAudio.load();
+        isMusicLoaded = true;
+    }
+    playMusicForState(currentMusicState);
+}
+
+function playMusicForState(state) {
+    if (isMuted) { bgAudio.pause(); return; }
+    let src = (state === "MENU") ? MENU_MUSIC : GAME_MUSIC;
+    
+    if (activeAudioSrc !== src) {
+        activeAudioSrc = src;
+        bgAudio.src = src;
+        bgAudio.load();
+        bgAudio.play().catch(()=>{});
+    } else {
+        if (bgAudio.paused) bgAudio.play().catch(()=>{});
+    }
+    bgAudio.volume = musicVolume;
+}
+
+function toggleMute() { 
+    isMuted = !isMuted; 
+    saveData('dem_muted', isMuted); 
+    if (isMuted) bgAudio.pause(); 
+    else playMusicForState(currentMusicState); 
+}
+
+function setMusicVolume(val) { 
+    musicVolume = Math.max(0, Math.min(1, val)); 
+    saveData('dem_music_volume', musicVolume); 
+    if (!isMuted) bgAudio.volume = musicVolume; 
+}
+function setSfxVolume(val) { sfxVolume = Math.max(0, Math.min(1, val)); saveData('dem_sfx_volume', sfxVolume); }
+
+function playSynthSFX(type) {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    const now = audioCtx.currentTime;
+    const vol = sfxVolume;
+    if (type === 'slash') { osc.type='triangle'; osc.frequency.setValueAtTime(600,now); osc.frequency.exponentialRampToValueAtTime(150,now+0.2); gain.gain.setValueAtTime(0.3*vol,now); gain.gain.exponentialRampToValueAtTime(0.01,now+0.2); osc.start(now); osc.stop(now+0.2); }
+    else if (type === 'hit') { osc.type='sine'; osc.frequency.setValueAtTime(1000,now); osc.frequency.exponentialRampToValueAtTime(300,now+0.12); gain.gain.setValueAtTime(0.4*vol,now); gain.gain.exponentialRampToValueAtTime(0.01,now+0.12); osc.start(now); osc.stop(now+0.12); }
+    else if (type === 'coin') { osc.type='square'; osc.frequency.setValueAtTime(880,now); osc.frequency.setValueAtTime(1200,now+0.08); gain.gain.setValueAtTime(0.15*vol,now); gain.gain.exponentialRampToValueAtTime(0.01,now+0.25); osc.start(now); osc.stop(now+0.25); }
+    else if (type === 'explosion') { osc.type='sawtooth'; osc.frequency.setValueAtTime(150,now); osc.frequency.exponentialRampToValueAtTime(10,now+0.6); gain.gain.setValueAtTime(0.6*vol,now); gain.gain.exponentialRampToValueAtTime(0.01,now+0.6); osc.start(now); osc.stop(now+0.6); }
+    else if (type === 'hurt') { osc.type='sawtooth'; osc.frequency.setValueAtTime(250,now); osc.frequency.linearRampToValueAtTime(50,now+0.35); gain.gain.setValueAtTime(0.4*vol,now); gain.gain.exponentialRampToValueAtTime(0.01,now+0.35); osc.start(now); osc.stop(now+0.35); }
+}
+
+const locale = {
+    TR: { title: "Demlik", playBtn: "OYUNA BAŞLA", shopBtn: "MARKET", settingsBtn: "AYARLAR", playHint: "VEYA SPACE / ENTER", shopTitle: "MARKET", coin: "PARA: ", survivalTime: "SÜRE: ", victory: "ARENA TAMAMLANDI!", failed: "ELENDİN!", restart: "DEVAM ETMEK İÇİN TIKLAYIN VEYA ENTER/SPACE", settingsTitle: "AYARLAR", volume: "MÜZİK", sfx: "SES EFECT", close: "KAPAT", paused: "OYUN DURDURULDU", resume: "DEVAM ET", mainMenu: "ANA MENÜ", music: "MÜZİK: ", lang: "DİL: ", highscore: "REKOR: ", currentscore: "SKOR: ", level: "SEVİYE: ", dev: "GELİŞTİRİCİLER" },
+    EN: { title: "Demlik", playBtn: "START GAME", shopBtn: "MARKET", settingsBtn: "SETTINGS", playHint: "OR PRESS SPACE / ENTER", shopTitle: "MARKET", coin: "MONEY: ", survivalTime: "TIME: ", victory: "ARENA COMPLETED!", failed: "DEFEATED!", restart: "CLICK OR PRESS ENTER/SPACE TO RESTART", settingsTitle: "SETTINGS", volume: "MUSIC", sfx: "SFX", close: "CLOSE", paused: "GAME PAUSED", resume: "RESUME", mainMenu: "MAIN MENU", music: "MUSIC: ", lang: "LANG: ", highscore: "RECORD: ", currentscore: "SCORE: ", level: "LEVEL: ", dev: "DEVELOPERS" }
+};
+
+// --- OYUN DURUMLARI ---
+let gameState = "MENU";
+let previousState = "MENU";
+let isSettingsOpen = false;
+let survivalTimer = 90 * 60;
+let activeKeys = new Set();
+const inputMap = { left: false, right: false, jump: false, dash: false, down: false };
+let selectedSlot = 0;
+let currentScore = 0;
+let mouseX = 0, mouseY = 0;
+let cheatCodeInput = "";
+let showInGameSettings = false;
+let shopOpenFromMenu = false;
+let difficultyLevel = 1;
+
+// Geliştiriciler modal
+let showDevModal = false;
+
+// Oyun içi rastgele mesaj
+let randomMessageTimer = 0;
+let randomMessageText = "";
+let randomMessageDisplay = 0;
+const randomMessages = [
+    "iso yaptı bu oyunu",
+    "çay sevmeyen poh içsin",
+    "CMS Team adamdır",
+    "Oshi bir dahi",
+    "İsocuk yaptı",
+    "selam isocuk"
+];
+
+// Bergamot etkisi
+let potionActive = false;
+let potionTimer = 0;
+let potionBonusHp = 0;
+let potionBonusDamage = 0;
+
+const inventoryItems = [
+    { id: 'normal', name: 'Katana', count: 1 },
+    { id: 'bomb', name: 'Patlayıcı', count: () => bombCount },
+    { id: 'diamond', name: 'Elmas Katana', count: () => hasDiamondKatana ? 1 : 0 },
+    { id: 'potion', name: 'Bergamot', count: () => potionCount }
+];
+const uiButtons = { menuPlay: {x:0,y:0,w:280,h:50}, menuShop: {x:0,y:0,w:280,h:50}, menuSettings: {x:0,y:0,w:280,h:50}, menuDev: {x:0,y:0,w:280,h:50}, volumeBar: {x:0,y:0,w:200,h:10}, sfxBar: {x:0,y:0,w:200,h:10}, langBtn: {x:0,y:0,w:120,h:40}, closeBtn: {x:0,y:0,w:100,h:35}, gameCart: {x:0,y:0,w:70,h:42}, pauseResume: {x:0,y:0,w:220,h:45}, pauseMute: {x:0,y:0,w:220,h:45}, pauseLang: {x:0,y:0,w:220,h:45}, pauseMenu: {x:0,y:0,w:220,h:45}, pauseSettings: {x:0,y:0,w:220,h:45}, tutorialClose: {x:0,y:0,w:180,h:46}, helpBtn: {x:0,y:0,w:44,h:44} };
+
+// --- KLAVYE / FARE ---
+window.addEventListener('keydown', (e) => {
+    initAudio();
+    if (gameState === "CHEAT_PANEL") {
+        if (e.key === 'Escape' || e.key === '"' || e.key === 'i') { gameState = previousState; playSynthSFX('hit'); return; }
+        if (e.key === 'Enter') {
+            let lower = cheatCodeInput.toLowerCase();
+            if (lower === "paramıverlakahve" || lower === "paramiverlakahve") {
+                totalCoins = 999999;
+                saveData('dem_total_coins', totalCoins);
+                playSynthSFX('coin');
+            } else if (lower === "paramıalkahve" || lower === "paramialkahve") {
+                totalCoins = 0;
+                saveData('dem_total_coins', totalCoins);
+                playSynthSFX('coin');
+            } else {
+                playSynthSFX('hurt');
+            }
+            cheatCodeInput = ""; gameState = previousState; return;
+        }
+        if (e.key === 'Backspace') { cheatCodeInput = cheatCodeInput.slice(0,-1); return; }
+        if (e.key.length === 1) { cheatCodeInput += e.key; return; }
+        return;
+    }
+    activeKeys.add(e.key.toLowerCase());
+    updateInputs();
+    if (e.key === '"' || e.key === 'i') { previousState = gameState; gameState = "CHEAT_PANEL"; cheatCodeInput = ""; playSynthSFX('hit'); return; }
+    
+    if (e.key === 'Escape') {
+        if (gameState === "PLAYING") {
+            gameState = "PAUSED";
+            showInGameSettings = false;
+        } else if (gameState === "PAUSED") {
+            if (showInGameSettings) {
+                showInGameSettings = false;
+            } else {
+                gameState = "PLAYING";
+            }
+        } else if (gameState === "IN_GAME_SHOP") {
+            gameState = "PLAYING";
+            shopOpenFromMenu = false;
+        } else if (gameState === "MENU_SHOP") {
+            gameState = "MENU";
+            shopOpenFromMenu = false;
+        } else if (gameState === "MENU") {
+            if (isSettingsOpen) isSettingsOpen = false;
+            else if (shopOpenFromMenu) { shopOpenFromMenu = false; gameState = "MENU"; }
+            else if (showDevModal) showDevModal = false;
+        }
+    }
+    if (e.key === 'Enter' || e.key === ' ') {
+        if (gameState === "MENU" && !isSettingsOpen && !shopOpenFromMenu && !showDevModal) startSurvivalGame();
+        else if (gameState === "GAMEOVER") gameState = "MENU";
+    }
+    if (['1','2','3','4'].includes(e.key)) selectedSlot = parseInt(e.key)-1;
+    
+    if (e.key === 'q' || e.key === 'Q') {
+        if (gameState === "PLAYING") {
+            demlik.facing = -1;
+            useSelectedItem();
+        }
+    }
+    if (e.key === 'e' || e.key === 'E') {
+        if (gameState === "PLAYING") {
+            demlik.facing = 1;
+            useSelectedItem();
+        }
+    }
+    
+    if (e.key === 'm' || e.key === 'M') {
+        if (gameState === "PLAYING") {
+            if (gameState === "IN_GAME_SHOP") {
+                gameState = "PLAYING";
+                shopOpenFromMenu = false;
+            } else {
+                gameState = "IN_GAME_SHOP";
+                shopOpenFromMenu = true;
+                playSynthSFX('hit');
+            }
+        } else if (gameState === "MENU" && !isSettingsOpen && !showDevModal) {
+            if (shopOpenFromMenu) {
+                shopOpenFromMenu = false;
+                gameState = "MENU";
+            } else {
+                gameState = "MENU_SHOP";
+                shopOpenFromMenu = true;
+                playSynthSFX('hit');
+            }
+        } else if (gameState === "IN_GAME_SHOP") {
+            gameState = "PLAYING";
+            shopOpenFromMenu = false;
+        } else if (gameState === "MENU_SHOP") {
+            gameState = "MENU";
+            shopOpenFromMenu = false;
+        }
+    }
+});
+window.addEventListener('keyup', (e) => { activeKeys.delete(e.key.toLowerCase()); updateInputs(); });
+window.addEventListener('wheel', (e) => {
+    if (gameState === "PLAYING") {
+        if (e.deltaY > 0) selectedSlot = (selectedSlot+1)%4;
+        else selectedSlot = (selectedSlot-1+4)%4;
+    }
+});
+let isDraggingVolume = false;
+let isDraggingSfx = false;
+
+window.addEventListener('mousedown', (e) => {
+    initAudio();
+    const mx = e.clientX, my = e.clientY;
+
+    // TUTORIAL MODAL açık ise önce onu kontrol et
+    if (showTutorial) {
+        let t = uiButtons.tutorialClose;
+        if (mx >= t.x && mx <= t.x+t.w && my >= t.y && my <= t.y+t.h) {
+            showTutorial = false;
+            tutorialShown = true;
+            saveData('dem_tutorial_shown', true);
+            playSynthSFX('hit');
+            return;
+        }
+        // Modal açıkken başka tıklamaları engelle
+        return;
+    }
+
+    if (gameState === "GAMEOVER") { gameState = "MENU"; shopOpenFromMenu = false; playSynthSFX('hit'); return; }
+
+    if (gameState === "MENU" && isSettingsOpen) {
+        let bar = uiButtons.volumeBar;
+        if (mx >= bar.x && mx <= bar.x + bar.w && my >= bar.y - 10 && my <= bar.y + bar.h + 10) {
+            let percentage = Math.max(0, Math.min(1, (mx - bar.x) / bar.w));
+            setMusicVolume(percentage);
+            isDraggingVolume = true;
+            return;
+        }
+        let sbar = uiButtons.sfxBar;
+        if (mx >= sbar.x && mx <= sbar.x + sbar.w && my >= sbar.y - 10 && my <= sbar.y + sbar.h + 10) {
+            let percentage = Math.max(0, Math.min(1, (mx - sbar.x) / sbar.w));
+            setSfxVolume(percentage);
+            isDraggingSfx = true;
+            return;
+        }
+        let l = uiButtons.langBtn;
+        if (mx >= l.x && mx <= l.x+l.w && my >= l.y && my <= l.y+l.h) { currentLang = currentLang==='TR'?'EN':'TR'; saveData('dem_lang',currentLang); playSynthSFX('hit'); }
+        let c = uiButtons.closeBtn;
+        if (mx >= c.x && mx <= c.x+c.w && my >= c.y && my <= c.y+c.h) { isSettingsOpen = false; playSynthSFX('hit'); }
+        return;
+    }
+    
+    if (gameState === "MENU") {
+        if (showDevModal) {
+            let c = uiButtons.closeBtn;
+            if (mx >= c.x && mx <= c.x+c.w && my >= c.y && my <= c.y+c.h) { showDevModal = false; playSynthSFX('hit'); return; }
+            if (uiButtons.devLink1 && mx >= uiButtons.devLink1.x && mx <= uiButtons.devLink1.x+uiButtons.devLink1.w && my >= uiButtons.devLink1.y && my <= uiButtons.devLink1.y+uiButtons.devLink1.h) {
+                window.open('https://teatube.xyz', '_blank');
+                playSynthSFX('hit');
+                return;
+            }
+            if (uiButtons.devLink2 && mx >= uiButtons.devLink2.x && mx <= uiButtons.devLink2.x+uiButtons.devLink2.w && my >= uiButtons.devLink2.y && my <= uiButtons.devLink2.y+uiButtons.devLink2.h) {
+                window.open('https://defterdar.xyz', '_blank');
+                playSynthSFX('hit');
+                return;
+            }
+            return;
+        }
+        if (shopOpenFromMenu) {
+            let c = uiButtons.closeBtn;
+            if (mx >= c.x && mx <= c.x+c.w && my >= c.y && my <= c.y+c.h) { shopOpenFromMenu = false; gameState = "MENU"; playSynthSFX('hit'); return; }
+            handleShopClick(mx, my);
+            return;
+        }
+        let p = uiButtons.menuPlay;
+        if (mx >= p.x && mx <= p.x+p.w && my >= p.y && my <= p.y+p.h) { startSurvivalGame(); return; }
+        let s = uiButtons.menuShop;
+        if (mx >= s.x && mx <= s.x+s.w && my >= s.y && my <= s.y+s.h) { gameState = "MENU_SHOP"; shopOpenFromMenu = true; playSynthSFX('hit'); return; }
+        let st = uiButtons.menuSettings;
+        if (mx >= st.x && mx <= st.x+st.w && my >= st.y && my <= st.y+st.h) { isSettingsOpen = true; playSynthSFX('hit'); return; }
+        let dev = uiButtons.menuDev;
+        if (mx >= dev.x && mx <= dev.x+dev.w && my >= dev.y && my <= dev.y+dev.h) { showDevModal = true; playSynthSFX('hit'); return; }
+    }
+    else if (gameState === "MENU_SHOP" || gameState === "IN_GAME_SHOP") {
+        let c = uiButtons.closeBtn;
+        if (mx >= c.x && mx <= c.x+c.w && my >= c.y && my <= c.y+c.h) { 
+            if (gameState === "MENU_SHOP") { gameState = "MENU"; shopOpenFromMenu = false; } 
+            else { gameState = "PLAYING"; shopOpenFromMenu = false; }
+            playSynthSFX('hit'); 
+            return; 
+        }
+        handleShopClick(mx, my);
+    }
+    else if (gameState === "PLAYING") {
+        // Sağ alt yardım butonu
+        let hb = uiButtons.helpBtn;
+        if (mx >= hb.x && mx <= hb.x+hb.w && my >= hb.y && my <= hb.y+hb.h) {
+            showTutorial = true;
+            playSynthSFX('hit');
+            return;
+        }
+        let cart = uiButtons.gameCart;
+        if (mx >= cart.x && mx <= cart.x+cart.w && my >= cart.y && my <= cart.y+cart.h) { gameState = "IN_GAME_SHOP"; shopOpenFromMenu = true; playSynthSFX('hit'); return; }
+        if (e.button === 0) useSelectedItem();
+    }
+    else if (gameState === "PAUSED") {
+        // PAUSED'da da yardım butonu gösteriliyor mu? Aynı mantıkla ekleyelim.
+        let hb = uiButtons.helpBtn;
+        if (mx >= hb.x && mx <= hb.x+hb.w && my >= hb.y && my <= hb.y+hb.h) {
+            showTutorial = true;
+            playSynthSFX('hit');
+            return;
+        }
+        let b = uiButtons;
+        if (showInGameSettings) {
+            let bar = uiButtons.volumeBar;
+            if (mx >= bar.x && mx <= bar.x + bar.w && my >= bar.y - 10 && my <= bar.y + bar.h + 10) {
+                let percentage = Math.max(0, Math.min(1, (mx - bar.x) / bar.w));
+                setMusicVolume(percentage);
+                isDraggingVolume = true;
+                return;
+            }
+            let sbar = uiButtons.sfxBar;
+            if (mx >= sbar.x && mx <= sbar.x + sbar.w && my >= sbar.y - 10 && my <= sbar.y + sbar.h + 10) {
+                let percentage = Math.max(0, Math.min(1, (mx - sbar.x) / sbar.w));
+                setSfxVolume(percentage);
+                isDraggingSfx = true;
+                return;
+            }
+            let c = uiButtons.closeBtn;
+            if (mx >= c.x && mx <= c.x+c.w && my >= c.y && my <= c.y+c.h) { showInGameSettings = false; playSynthSFX('hit'); return; }
+        } else {
+            if (mx >= b.pauseResume.x && mx <= b.pauseResume.x+b.pauseResume.w && my >= b.pauseResume.y && my <= b.pauseResume.y+b.pauseResume.h) { 
+                showInGameSettings = false;
+                gameState = "PLAYING"; playSynthSFX('hit'); 
+            }
+            else if (mx >= b.pauseMute.x && mx <= b.pauseMute.x+b.pauseMute.w && my >= b.pauseMute.y && my <= b.pauseMute.y+b.pauseMute.h) { toggleMute(); playSynthSFX('hit'); }
+            else if (mx >= b.pauseLang.x && mx <= b.pauseLang.x+b.pauseLang.w && my >= b.pauseLang.y && my <= b.pauseLang.y+b.pauseLang.h) { currentLang = currentLang==='TR'?'EN':'TR'; saveData('dem_lang',currentLang); playSynthSFX('hit'); }
+            else if (mx >= b.pauseMenu.x && mx <= b.pauseMenu.x+b.pauseMenu.w && my >= b.pauseMenu.y && my <= b.pauseMenu.y+b.pauseMenu.h) { showInGameSettings = false; gameState = "MENU"; shopOpenFromMenu = false; playSynthSFX('hit'); }
+            else if (mx >= b.pauseSettings.x && mx <= b.pauseSettings.x+b.pauseSettings.w && my >= b.pauseSettings.y && my <= b.pauseSettings.y+b.pauseSettings.h) { showInGameSettings = true; playSynthSFX('hit'); }
+        }
+    }
+});
+
+window.addEventListener('mousemove', (e) => {
+    mouseX = e.clientX; mouseY = e.clientY;
+    if (isDraggingVolume) {
+        let bar = uiButtons.volumeBar;
+        let percentage = Math.max(0, Math.min(1, (mouseX - bar.x) / bar.w));
+        setMusicVolume(percentage);
+    }
+    if (isDraggingSfx) {
+        let sbar = uiButtons.sfxBar;
+        let percentage = Math.max(0, Math.min(1, (mouseX - sbar.x) / sbar.w));
+        setSfxVolume(percentage);
+    }
+    let isHovering = false;
+    if (gameState === "MENU") {
+        if (isSettingsOpen) { let c=uiButtons.closeBtn,l=uiButtons.langBtn; if ((mxIn(c))||(mxIn(l))||(mxIn(uiButtons.volumeBar) && mouseY >= uiButtons.volumeBar.y-10 && mouseY <= uiButtons.volumeBar.y+uiButtons.volumeBar.h+10)||(mxIn(uiButtons.sfxBar) && mouseY >= uiButtons.sfxBar.y-10 && mouseY <= uiButtons.sfxBar.y+uiButtons.sfxBar.h+10)) isHovering=true; }
+        else if (showDevModal) {
+            if (mxIn(uiButtons.closeBtn) || mxIn(uiButtons.devLink1) || mxIn(uiButtons.devLink2)) isHovering = true;
+        }
+        else if (shopOpenFromMenu) {
+            if (mxIn(uiButtons.closeBtn)) isHovering=true;
+            shopItems.forEach(item => { if (mxIn(item)) isHovering=true; });
+        }
+        else { 
+            let p=uiButtons.menuPlay,s=uiButtons.menuShop,st=uiButtons.menuSettings,dev=uiButtons.menuDev; 
+            if (mxIn(p)||mxIn(s)||mxIn(st)||mxIn(dev)) isHovering=true; 
+        }
+    } else if (gameState === "MENU_SHOP" || gameState === "IN_GAME_SHOP") {
+        if (mxIn(uiButtons.closeBtn)) isHovering=true;
+        shopItems.forEach(item => { if (mxIn(item)) isHovering=true; });
+    } else if (gameState === "PLAYING" || gameState === "PAUSED") {
+        if (mxIn(uiButtons.gameCart)) isHovering=true;
+        if (mxIn(uiButtons.helpBtn)) isHovering=true;
+    } else if (gameState === "PAUSED") {
+        let b=uiButtons;
+        if (showInGameSettings) {
+            if (mxIn(b.closeBtn) || (mxIn(b.volumeBar) && mouseY >= b.volumeBar.y-10 && mouseY <= b.volumeBar.y+b.volumeBar.h+10) || (mxIn(b.sfxBar) && mouseY >= b.sfxBar.y-10 && mouseY <= b.sfxBar.y+b.sfxBar.h+10)) isHovering=true;
+        } else {
+            if (mxIn(b.pauseResume)||mxIn(b.pauseMute)||mxIn(b.pauseLang)||mxIn(b.pauseMenu)||mxIn(b.pauseSettings)) isHovering=true;
+        }
+    }
+    document.body.style.cursor = isHovering ? 'pointer' : 'default';
+});
+window.addEventListener('mouseup', () => { isDraggingVolume = false; isDraggingSfx = false; });
+
+function mxIn(rect) { return rect && mouseX >= rect.x && mouseX <= rect.x+rect.w && mouseY >= rect.y && mouseY <= rect.y+rect.h; }
+
+function updateInputs() {
+    inputMap.left = activeKeys.has('a') || activeKeys.has('arrowleft');
+    inputMap.right = activeKeys.has('d') || activeKeys.has('arrowright');
+    inputMap.jump = activeKeys.has('w') || activeKeys.has(' ') || activeKeys.has('arrowup');
+    inputMap.dash = activeKeys.has('shift');
+    inputMap.down = activeKeys.has('s') || activeKeys.has('arrowdown');
+}
+
+// --- MARKET ---
+const shopItems = [
+    { id: 'bomb', name: '3x Patlayıcı', cost: 15, x:0,y:0,w:200,h:90 },
+    { id: 'diamond', name: 'Elmas Katana', cost: 100, x:0,y:0,w:200,h:90 },
+    { id: 'potion', name: 'Bergamot', cost: 30, x:0,y:0,w:200,h:90 }
+];
+function handleShopClick(mx, my) {
+    shopItems.forEach(item => {
+        if (mx >= item.x && mx <= item.x+item.w && my >= item.y && my <= item.y+item.h) {
+            if (totalCoins >= item.cost) {
+                if (item.id === 'bomb') { totalCoins -= item.cost; bombCount += 3; saveData('dem_bomb_count', bombCount); }
+                else if (item.id === 'diamond' && !hasDiamondKatana) { totalCoins -= item.cost; hasDiamondKatana = true; diamondDurability = 100; saveData('dem_has_diamond', true); saveData('dem_diamond_durability', 100); }
+                else if (item.id === 'potion') { totalCoins -= item.cost; potionCount += 1; saveData('dem_potion_count', potionCount); }
+                saveData('dem_total_coins', totalCoins); playSynthSFX('coin');
+            } else playSynthSFX('hurt');
+        }
+    });
+}
+
+function drawPixelWeapon(cx, cy, color) {
+    ctx.strokeStyle = color; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(cx-10, cy+10); ctx.lineTo(cx+12, cy-12); ctx.stroke();
+    ctx.strokeStyle = '#8d6e63';
+    ctx.beginPath(); ctx.moveTo(cx-12, cy+12); ctx.lineTo(cx-8, cy+8); ctx.stroke();
+}
+function drawPixelBomb(cx, cy) {
+    ctx.fillStyle = '#222222';
+    ctx.beginPath(); ctx.arc(cx, cy+3, 10, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#ff3d00'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(cx, cy-7); ctx.quadraticCurveTo(cx+8, cy-14, cx+12, cy-8); ctx.stroke();
+}
+function drawPixelPotion(cx, cy) {
+    ctx.fillStyle = '#00ff66';
+    ctx.fillRect(cx-6, cy-4, 12, 14);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(cx-4, cy-10, 8, 6);
+}
+function drawPixelCart(cx, cy) {
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(cx-15, cy-10); ctx.lineTo(cx-10, cy-10); ctx.lineTo(cx-5, cy+5); ctx.lineTo(cx+12, cy+5); ctx.lineTo(cx+17, cy-7); ctx.lineTo(cx-8, cy-7); ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(cx-2, cy+9, 3, 0, Math.PI*2); ctx.arc(cx+8, cy+9, 3, 0, Math.PI*2); ctx.fill();
+}
+
+// --- OYUNCU ---
+const demlik = {
+    x:100, y:400, width:60, height:48, vx:0, vy:0, speed:6.2, jumpForce:-13.5, grounded:false, facing:1, hp:3, maxHp:3, damagePower:1, iframe:0, isSlashing:false, slashTimer:0, slashRange:130, isDashing:false, dashTimer:0, dashCooldown:0, ghosts:[],
+    dashStamina: 2,
+    dashStaminaMax: 2,
+    dashRegenTimer: 0,
+    draw() {
+        ctx.save(); ctx.translate(-camera.x, -camera.y);
+        if (this.iframe > 0 && Math.floor(Date.now()/50)%2===0) { ctx.restore(); return; }
+        this.ghosts.forEach(g => { ctx.fillStyle = `rgba(0,255,255,${g.alpha})`; ctx.fillRect(g.x, g.y, this.width, this.height); });
+        ctx.shadowBlur = 15; ctx.shadowColor = '#00ffff';
+        ctx.fillStyle = '#eceff1'; ctx.fillRect(this.x+11, this.y+11, 38, 37);
+        ctx.fillStyle = '#00ffff';
+        ctx.fillRect(this.x+8, this.y+5, 44, 6); ctx.fillRect(this.x+25, this.y, 10, 5);
+        if (this.facing === 1) { ctx.fillRect(this.x+49, this.y+16, 11, 11); ctx.fillRect(this.x, this.y+13, 11, 27); }
+        else { ctx.fillRect(this.x, this.y+16, 11, 11); ctx.fillRect(this.x+49, this.y+13, 11, 27); }
+        ctx.shadowBlur = 0;
+        if (Math.random() < 0.2) {
+            let steamX = this.facing === 1 ? this.x+52 : this.x+6;
+            particles.push({ x:steamX, y:this.y+11, vx:this.facing*0.4, vy:-Math.random()*1.2-0.4, radius:Math.random()*3+1, color:'rgba(0,255,255,0.4)', alpha:0.5, decay:0.015, gravityY:-0.04 });
+        }
+        if (this.isSlashing) {
+            ctx.save();
+            ctx.strokeStyle = selectedSlot === 2 ? '#00e5ff' : '#ff007f';
+            ctx.lineWidth = selectedSlot === 2 ? 10 : 6;
+            ctx.shadowBlur = 30; ctx.shadowColor = selectedSlot === 2 ? '#00e5ff' : '#ff007f';
+            ctx.lineCap = 'round'; ctx.beginPath();
+            let currentArcProgress = (7 - this.slashTimer) / 7;
+            if (this.facing === 1) { let startAng = -Math.PI/2 + (currentArcProgress * Math.PI * 0.4); let endAng = startAng + Math.PI * 0.6; ctx.arc(this.x+this.width, this.y+this.height/2, this.slashRange, startAng, endAng); }
+            else { let startAng = Math.PI*1.5 - (currentArcProgress * Math.PI * 0.4); let endAng = startAng - Math.PI * 0.6; ctx.arc(this.x, this.y+this.height/2, this.slashRange, startAng, endAng, true); }
+            ctx.stroke(); ctx.restore();
+        }
+        ctx.restore();
+    },
+    update() {
+        if (this.iframe > 0) this.iframe--;
+        if (this.dashCooldown > 0) this.dashCooldown--;
+        if (this.dashStamina < this.dashStaminaMax) {
+            this.dashRegenTimer++;
+            if (this.dashRegenTimer >= 150) {
+                this.dashStamina = Math.min(this.dashStaminaMax, this.dashStamina + 1);
+                this.dashRegenTimer = 0;
+            }
+        } else { this.dashRegenTimer = 0; }
+
+        this.ghosts.forEach(g => g.alpha -= 0.08);
+        this.ghosts = this.ghosts.filter(g => g.alpha > 0);
+        
+        if (inputMap.down && this.grounded) {
+            let onPlatform = false;
+            for (let p of platforms) {
+                if (!p.isFloor && this.x + this.width > p.x && this.x < p.x + p.width &&
+                    Math.abs((this.y + this.height) - p.y) < 5) {
+                    onPlatform = true;
+                    break;
+                }
+            }
+            if (onPlatform) {
+                this.y += 5;
+                this.grounded = false;
+                this.vy = 2;
+            }
+        }
+
+        if (this.isDashing) {
+            this.vx = this.facing * 19; this.vy = 0; this.dashTimer--;
+            if (this.dashTimer % 2 === 0) this.ghosts.push({ x:this.x, y:this.y, alpha:0.5 });
+            if (this.dashTimer <= 0) this.isDashing = false;
+        } else {
+            if (inputMap.right) { this.vx = this.speed; this.facing = 1; }
+            else if (inputMap.left) { this.vx = -this.speed; this.facing = -1; }
+            else { this.vx *= 0.72; }
+            if (inputMap.jump && this.grounded) { this.vy = this.jumpForce; this.grounded = false; }
+            if (inputMap.dash) this.dash();
+            this.vy += gravity;
+        }
+        this.x += this.vx; this.y += this.vy;
+        
+        const arenaWidth = Math.max(1600, canvas.width + 400);
+        if (this.x < 50) this.x = 50;
+        if (this.x > arenaWidth - 50) this.x = arenaWidth - 50;
+        
+        if (this.isSlashing) { this.slashTimer--; if (this.slashTimer <= 0) this.isSlashing = false; }
+        
+        if (this.y > canvas.height + 100) {
+            this.hp = 0;
+            gameState = "GAMEOVER";
+        }
+    },
+    dash() {
+        if (this.dashStamina > 0 && this.dashCooldown === 0 && !this.isDashing) {
+            this.dashStamina--;
+            this.isDashing = true; this.dashTimer = 8; this.dashCooldown = 20;
+            spawnParticles(this.x+this.width/2, this.y+this.height/2, '#00ffff', 8);
+        }
+    },
+    takeDamage() {
+        if (this.iframe === 0) {
+            this.hp--; this.iframe = 60; camera.shakeTimer = 15; camera.shakeIntensity = 10;
+            playSynthSFX('hurt');
+            spawnParticles(this.x+this.width/2, this.y+this.height/2, '#ff0000', 12, 1.3);
+            if (this.hp <= 0) gameState = "GAMEOVER";
+        }
+    }
+};
+
+// --- EŞYA KULLANIMLARI (kullanılamazsa ses efekti) ---
+function useSelectedItem() {
+    if (selectedSlot === 0) {
+        performSlash(demlik.damagePower, false);
+    } else if (selectedSlot === 1) {
+        if (bombCount > 0) {
+            bombCount--;
+            saveData('dem_bomb_count', bombCount);
+            spawnBomb(demlik.x+demlik.width/2, demlik.y+demlik.height/2);
+            playSynthSFX('slash');
+        } else {
+            playSynthSFX('hurt');
+        }
+    } else if (selectedSlot === 2) {
+        if (hasDiamondKatana && diamondDurability > 0) {
+            performSlash(demlik.damagePower + 2, true);
+        } else {
+            playSynthSFX('hurt');
+        }
+    } else if (selectedSlot === 3) {
+        if (potionCount > 0 && !potionActive) {
+            potionCount--;
+            saveData('dem_potion_count', potionCount);
+            potionActive = true;
+            potionTimer = 900;
+            potionBonusHp = 2;
+            potionBonusDamage = 2;
+            demlik.maxHp += potionBonusHp;
+            demlik.hp += potionBonusHp;
+            demlik.damagePower += potionBonusDamage;
+            playSynthSFX('coin');
+            spawnParticles(demlik.x+demlik.width/2, demlik.y+demlik.height/2, '#00ff66', 20, 1.5);
+        } else {
+            playSynthSFX('hurt');
+        }
+    }
+}
+
+function performSlash(dmg, isDiamond) {
+    if (demlik.isSlashing) return;
+    demlik.isSlashing = true; demlik.slashTimer = 7; playSynthSFX('slash');
+    spawnParticles(demlik.facing === 1 ? demlik.x+demlik.width : demlik.x, demlik.y+demlik.height/2, isDiamond ? '#00e5ff' : '#8d6e63', 6, 1.1);
+    let attackX = demlik.facing === 1 ? demlik.x+demlik.width : demlik.x-demlik.slashRange;
+    enemies.forEach(enemy => {
+        if (enemy.alive && attackX < enemy.x+enemy.width && attackX+demlik.slashRange > enemy.x && demlik.y-20 < enemy.y+enemy.height && demlik.y+demlik.height+20 > enemy.y) {
+            enemy.takeDamage(dmg);
+            if (isDiamond) {
+                let decay = enemy.type === 'cola' ? 8 : 3;
+                diamondDurability -= decay;
+                if (diamondDurability <= 0) { diamondDurability = 0; hasDiamondKatana = false; saveData('dem_has_diamond', false); }
+                saveData('dem_diamond_durability', diamondDurability);
+            }
+        }
+    });
+}
+
+// --- COIN ---
+let coins = [];
+class Coin {
+    constructor(x,y) { this.x=x; this.y=y; this.vy=-3-Math.random()*3; this.vx=(Math.random()-0.5)*4; this.angle=0; this.collected=false; }
+    update() {
+        this.vy += 0.2; this.x += this.vx; this.y += this.vy; this.angle += 0.15;
+        platforms.forEach(p => {
+            if (this.x > p.x && this.x < p.x+p.width && this.y >= p.y && this.y-this.vy <= p.y+10) { this.y = p.y-8; this.vy = 0; this.vx *= 0.8; }
+        });
+        let dx = demlik.x+demlik.width/2 - this.x, dy = demlik.y+demlik.height/2 - this.y, dist = Math.sqrt(dx*dx+dy*dy);
+        if (dist < 120) { this.x += (dx/dist)*6; this.y += (dy/dist)*6; }
+        if (dist < 30 && !this.collected) { this.collected = true; totalCoins += 1; saveData('dem_total_coins', totalCoins); playSynthSFX('coin'); spawnParticles(this.x, this.y, '#ffd700', 5, 0.5); }
+    }
+    draw() {
+        ctx.save(); ctx.translate(-camera.x, -camera.y); ctx.translate(this.x, this.y);
+        ctx.scale(Math.abs(Math.sin(this.angle)) + 0.2, 1);
+        ctx.shadowBlur = 15; ctx.shadowColor = '#ffd700';
+        ctx.fillStyle = '#ffd700'; ctx.beginPath(); ctx.arc(0,0,10,0,Math.PI*2); ctx.fill();
+        ctx.strokeStyle = '#ffb300'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.restore();
+    }
+}
+
+// --- BOMBA ---
+let bombs = [];
+function spawnBomb(x,y) { bombs.push({ x, y, timer: 180, radius: 120 }); }
+function updateAndDrawBombs() {
+    for (let i=bombs.length-1; i>=0; i--) {
+        let b = bombs[i]; b.timer--;
+        ctx.save(); ctx.translate(-camera.x, -camera.y);
+        ctx.shadowBlur = 15; ctx.shadowColor = '#ff3d00';
+        ctx.fillStyle = '#1a0000'; ctx.beginPath(); ctx.arc(b.x, b.y, 14, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = '#ff3d00'; ctx.lineWidth = 3; ctx.stroke();
+        if (Math.random() < 0.5) spawnParticles(b.x, b.y-14, '#ffeb3b', 1, 0.5);
+        ctx.fillStyle = '#ffffff'; ctx.font = 'bold 16px "Orbitron"'; ctx.textAlign = 'center';
+        ctx.fillText(Math.ceil(b.timer/60), b.x, b.y-25);
+        ctx.restore();
+        if (b.timer <= 0) {
+            playSynthSFX('explosion');
+            spawnParticles(b.x, b.y, '#ff3d00', 35, 2.5); spawnParticles(b.x, b.y, '#ffea00', 20, 1.8);
+            camera.shakeTimer = 25; camera.shakeIntensity = 15;
+            enemies.forEach(enemy => {
+                if (enemy.alive) {
+                    let dx = enemy.x+enemy.width/2-b.x, dy = enemy.y+enemy.height/2-b.y, dist = Math.sqrt(dx*dx+dy*dy);
+                    if (dist < b.radius) enemy.takeDamage(10);
+                }
+            });
+            let dx = demlik.x+demlik.width/2-b.x, dy = demlik.y+demlik.height/2-b.y, dist = Math.sqrt(dx*dx+dy*dy);
+            if (dist < b.radius) demlik.takeDamage();
+            bombs.splice(i,1);
+        }
+    }
+}
+
+// --- ARENA ---
+let platforms = [];
+function generateArena() {
+    platforms = [];
+    const floorY = canvas.height - 120;
+    const arenaWidth = Math.max(1600, canvas.width + 400);
+    platforms.push({ x: 0, y: floorY, width: arenaWidth, height: 40, isFloor: true });
+
+    const layer1Y = floorY - 130;
+    const layer2Y = floorY - 260;
+    const layer3Y = floorY - 390;
+
+    platforms.push({ x: 150, y: layer1Y, width: 350, height: 16, isFloor: false });
+    platforms.push({ x: 650, y: layer1Y, width: 400, height: 16, isFloor: false });
+    platforms.push({ x: 1200, y: layer1Y, width: 350, height: 16, isFloor: false });
+
+    platforms.push({ x: 400, y: layer2Y, width: 200, height: 16, isFloor: false });
+    platforms.push({ x: 900, y: layer2Y, width: 200, height: 16, isFloor: false });
+
+    platforms.push({ x: 550, y: layer3Y, width: 400, height: 16, isFloor: false });
+}
+
+// --- DÜŞMANLAR ---
+let enemies = [];
+class Enemy {
+    constructor(x, y, type, level) {
+        this.x = x;
+        this.y = y;
+        this.type = type;
+        this.width = 38;
+        this.height = 44;
+        this.alive = true;
+        const baseSpeed = type === 'hamburger' ? 2.5 : 1.8;
+        this.speed = baseSpeed * (1 + (level-1) * 0.12);
+        this.direction = 1;
+        this.vy = 0;
+        this.grounded = false;
+        this.attackCooldown = 0;
+        this.isSlashing = false;
+        this.slashTimer = 0;
+        this.slashRange = 120;
+        let baseHp = type === 'cola' ? 8 : (type === 'coffee' ? 5 : 4);
+        this.maxHp = Math.floor(baseHp * (1 + (level-1) * 0.25));
+        this.hp = this.maxHp;
+        this.attackDelay = Math.max(20, 30 - (level-1) * 1.5);
+    }
+
+    draw() {
+        if (!this.alive) return;
+        ctx.save();
+        ctx.translate(-camera.x, -camera.y);
+        const barW = 40, barH = 6, barX = this.x + (this.width - barW) / 2, barY = this.y - 16;
+        ctx.fillStyle = '#110221';
+        ctx.fillRect(barX, barY, barW, barH);
+        ctx.fillStyle = '#ff1744';
+        ctx.fillRect(barX, barY, barW * (this.hp / this.maxHp), barH);
+        ctx.shadowBlur = 10;
+        
+        if (this.type === 'coffee') { ctx.shadowColor = '#6d4c41'; ctx.fillStyle = '#8d6e63'; ctx.fillRect(this.x, this.y, this.width, this.height); ctx.fillStyle = '#ffffff'; ctx.fillRect(this.x - 2, this.y - 4, this.width + 4, 6); }
+        else if (this.type === 'cola') { ctx.shadowColor = '#f44336'; ctx.fillStyle = '#e53935'; ctx.fillRect(this.x, this.y, this.width, this.height); ctx.fillStyle = '#b0bec5'; ctx.fillRect(this.x + 4, this.y - 4, this.width - 8, 4); }
+        else if (this.type === 'hamburger') { ctx.shadowColor = '#ffb300'; ctx.fillStyle = '#ffe082'; ctx.fillRect(this.x, this.y, this.width, 12); ctx.fillStyle = '#4e342e'; ctx.fillRect(this.x - 2, this.y + 12, this.width + 4, 10); ctx.fillStyle = '#ffe082'; ctx.fillRect(this.x, this.y + 22, this.width, 12); }
+        
+        if (this.isSlashing) {
+            ctx.strokeStyle = '#ff1744';
+            ctx.lineWidth = 5;
+            ctx.shadowBlur = 20;
+            ctx.shadowColor = '#ff1744';
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            let progress = (7 - this.slashTimer) / 7;
+            if (this.direction === 1) {
+                let startAng = -Math.PI / 2 + progress * Math.PI * 0.4;
+                let endAng = startAng + Math.PI * 0.6;
+                ctx.arc(this.x + this.width, this.y + this.height / 2, this.slashRange, startAng, endAng);
+            } else {
+                let startAng = Math.PI * 1.5 - progress * Math.PI * 0.4;
+                let endAng = startAng - Math.PI * 0.6;
+                ctx.arc(this.x, this.y + this.height / 2, this.slashRange, startAng, endAng, true);
+            }
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    update() {
+        if (!this.alive) return;
+
+        this.vy += gravity;
+        this.y += this.vy;
+
+        let dx = (demlik.x + demlik.width / 2) - (this.x + this.width / 2);
+        let dy = (demlik.y + demlik.height / 2) - (this.y + this.height / 2);
+        let dist = Math.sqrt(dx*dx + dy*dy);
+
+        this.direction = dx > 0 ? 1 : -1;
+        
+        if (dist < 450) {
+            if (Math.abs(dx) > 50 && !this.isSlashing) {
+                this.x += this.direction * this.speed;
+            }
+        }
+
+        this.grounded = false;
+        for (let p of platforms) {
+            if (this.x + this.width > p.x && this.x < p.x + p.width && 
+                this.y + this.height >= p.y && this.y + this.height - this.vy <= p.y + 12) {
+                this.y = p.y - this.height;
+                this.vy = 0;
+                this.grounded = true;
+            }
+        }
+
+        const arenaWidth = Math.max(1600, canvas.width + 400);
+        if (this.x < 0) this.x = 0;
+        if (this.x + this.width > arenaWidth) this.x = arenaWidth - this.width;
+
+        if (this.isSlashing) {
+            this.slashTimer--;
+            if (this.slashTimer <= 0) this.isSlashing = false;
+        }
+
+        this.attackCooldown++;
+        if (Math.abs(dx) < this.slashRange && this.attackCooldown > this.attackDelay && Math.abs(dy) < 60) {
+            this.attackCooldown = 0;
+            this.isSlashing = true;
+            this.slashTimer = 7;
+            playSynthSFX('slash');
+            
+            let attackX = this.direction === 1 ? this.x + this.width : this.x - this.slashRange;
+            if (attackX < demlik.x + demlik.width && attackX + this.slashRange > demlik.x &&
+                this.y - 20 < demlik.y + demlik.height && this.y + this.height + 20 > demlik.y) {
+                demlik.takeDamage();
+            }
+        }
+    }
+
+    takeDamage(dmg) {
+        this.hp -= dmg;
+        hitstopTimer = 4;
+        camera.shakeTimer = 8;
+        camera.shakeIntensity = 6;
+        playSynthSFX('hit');
+        if (this.hp <= 0) {
+            this.alive = false;
+            currentScore += 2;
+            if (currentScore > highScore) {
+                highScore = currentScore;
+                saveData('dem_high_score', highScore);
+            }
+            let coinCount = Math.floor(Math.random() * 3) + 1;
+            for (let i = 0; i < coinCount; i++) {
+                coins.push(new Coin(this.x + this.width / 2, this.y + this.height / 2));
+            }
+            let color = '#6d4c41';
+            if (this.type === 'hamburger') color = '#ffb300';
+            if (this.type === 'cola') color = '#e53935';
+            spawnParticles(this.x + this.width / 2, this.y + this.height / 2, color, 12, 1.1);
+        }
+    }
+}
+
+function manageSpawning() {
+    let aliveCount = enemies.filter(e => e.alive).length;
+    let maxAlive = 4 + (difficultyLevel - 1) * 2;
+    if (aliveCount < maxAlive) {
+        const floorY = canvas.height - 120;
+        let types = ['coffee', 'cola', 'hamburger'];
+        let randomType = types[Math.floor(Math.random() * types.length)];
+        let spawnX = demlik.x + (Math.random() > 0.5 ? 400 : -400);
+        const arenaWidth = Math.max(1600, canvas.width + 400);
+        if (spawnX < 80) spawnX = 200;
+        if (spawnX > arenaWidth - 80) spawnX = arenaWidth - 200;
+        let enemy = new Enemy(spawnX, floorY - 44, randomType, difficultyLevel);
+        enemies.push(enemy);
+    }
+}
+
+// --- PARTİKÜL ---
+let particles = [];
+function spawnParticles(x,y,color,count,speed=1) {
+    for (let i=0; i<count; i++) {
+        particles.push({ x, y, vx:(Math.random()-0.5)*8*speed, vy:(Math.random()-0.5)*8*speed-1, radius:Math.random()*4+1.5, color, alpha:1, decay:Math.random()*0.02+0.015, gravityY:0.18 });
+    }
+}
+
+let camera = { x:0, y:0, targetX:0, shakeTimer:0, shakeIntensity:0 };
+let hitstopTimer = 0;
+const gravity = 0.55;
+
+function advanceLevel() {
+    difficultyLevel++;
+    survivalTimer = 90 * 60;
+    spawnParticles(demlik.x + demlik.width/2, demlik.y + demlik.height/2, '#ffaa00', 30, 2);
+    playSynthSFX('explosion');
+}
+
+function startSurvivalGame() {
+    gameState = "PLAYING";
+    showInGameSettings = false;
+    shopOpenFromMenu = false;
+    difficultyLevel = 1;
+    survivalTimer = 90 * 60;
+    if (potionActive) {
+        demlik.maxHp -= potionBonusHp;
+        demlik.hp = Math.min(demlik.hp, demlik.maxHp);
+        demlik.damagePower -= potionBonusDamage;
+        potionActive = false;
+        potionTimer = 0;
+        potionBonusHp = 0;
+        potionBonusDamage = 0;
+    }
+    demlik.hp = 3; demlik.maxHp = 3; demlik.damagePower = 1;
+    demlik.dashStamina = 2; demlik.dashRegenTimer = 0;
+    demlik.x = 200; demlik.y = 400; demlik.vx = 0; demlik.vy = 0;
+    currentScore = 0; enemies = []; bombs = []; coins = [];
+    generateArena();
+    const floorY = canvas.height - 120;
+    enemies.push(new Enemy(500, floorY-44, 'coffee', difficultyLevel));
+    enemies.push(new Enemy(900, floorY-44, 'cola', difficultyLevel));
+    currentMusicState = "GAME";
+    playMusicForState("GAME");
+    randomMessageTimer = 300 + Math.floor(Math.random() * 300);
+}
+
+// --- GÜNCELLEME ---
+function update() {
+    if (gameState === "PLAYING") {
+        if (hitstopTimer > 0) { hitstopTimer--; return; }
+        survivalTimer--;
+        if (survivalTimer <= 0) {
+            advanceLevel();
+        }
+        
+        if (randomMessageTimer > 0) {
+            randomMessageTimer--;
+        } else {
+            randomMessageText = randomMessages[Math.floor(Math.random() * randomMessages.length)];
+            randomMessageDisplay = 120;
+            randomMessageTimer = 300 + Math.floor(Math.random() * 600);
+        }
+        if (randomMessageDisplay > 0) {
+            randomMessageDisplay--;
+        }
+        
+        if (potionActive) {
+            potionTimer--;
+            if (potionTimer <= 0) {
+                demlik.maxHp -= potionBonusHp;
+                demlik.hp = Math.min(demlik.hp, demlik.maxHp);
+                demlik.damagePower -= potionBonusDamage;
+                potionActive = false;
+                potionBonusHp = 0;
+                potionBonusDamage = 0;
+                spawnParticles(demlik.x+demlik.width/2, demlik.y+demlik.height/2, '#ff6600', 15, 1.2);
+            }
+        }
+        
+        demlik.update();
+        enemies.forEach(enemy => enemy.update());
+        coins.forEach(coin => coin.update());
+        coins = coins.filter(c => !c.collected);
+        updateAndDrawBombs();
+        manageSpawning();
+        demlik.grounded = false;
+        
+        platforms.forEach(p => {
+            if (inputMap.down && !p.isFloor) return;
+
+            if (demlik.x+demlik.width > p.x && demlik.x < p.x+p.width && demlik.y+demlik.height >= p.y && demlik.y+demlik.height-demlik.vy <= p.y+12) {
+                demlik.y = p.y - demlik.height;
+                demlik.vy = 0;
+                demlik.grounded = true;
+            }
+        });
+
+        for (let i=particles.length-1; i>=0; i--) {
+            let p = particles[i];
+            p.x += p.vx; p.y += p.vy; p.vy += p.gravityY; p.alpha -= p.decay;
+            if (p.alpha <= 0) particles.splice(i,1);
+        }
+        camera.targetX = demlik.x - canvas.width/2;
+        const arenaWidth = Math.max(1600, canvas.width + 400);
+        let maxX = arenaWidth - canvas.width;
+        if (maxX < 0) maxX = 0;
+        camera.targetX = Math.max(0, Math.min(maxX, camera.targetX));
+        camera.x += (camera.targetX - camera.x) * 0.08;
+        if (camera.shakeTimer > 0) { camera.x += (Math.random()-0.5)*camera.shakeIntensity; camera.shakeTimer--; }
+    }
+}
+
+function drawMenuButton(btn, text, isHovered, activeColor, inactiveColor) {
+    ctx.save();
+    ctx.fillStyle = isHovered ? '#12042b' : '#080214';
+    ctx.strokeStyle = isHovered ? activeColor : inactiveColor;
+    ctx.lineWidth = 3;
+    if (isHovered) { ctx.shadowBlur = 20; ctx.shadowColor = activeColor; }
+    ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+    ctx.strokeRect(btn.x, btn.y, btn.w, btn.h);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = isHovered ? '#ffffff' : '#b0aec4';
+    ctx.font = 'bold 16px "Orbitron"';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, btn.x+btn.w/2, btn.y+btn.h/2);
+    ctx.restore();
+}
+
+// --- DRAW ---
+function draw() {
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    if (gameState === "MENU") {
+        if (currentMusicState !== "MENU") {
+            currentMusicState = "MENU";
+            playMusicForState("MENU");
+        }
+        ctx.fillStyle = '#050110'; ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.strokeStyle = '#100624'; ctx.lineWidth=2;
+        for (let i=0; i<canvas.width; i+=80) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,canvas.height); ctx.stroke(); }
+        ctx.strokeStyle = '#00ffff'; ctx.lineWidth=4; ctx.strokeRect(20,20,canvas.width-40,canvas.height-40);
+        ctx.shadowBlur = 25; ctx.shadowColor = '#00ffff';
+        ctx.fillStyle = '#ffffff'; ctx.font = 'bold 72px "Orbitron"'; ctx.textAlign = 'center';
+        ctx.fillText(locale[currentLang].title, canvas.width/2, canvas.height/2 - 140);
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#00ff66'; ctx.font = 'bold 18px "Orbitron"'; ctx.fillText(`${locale[currentLang].highscore}${highScore}`, canvas.width/2 - 120, canvas.height/2 - 70);
+        ctx.fillStyle = '#ffd700'; ctx.fillText(`PARA: ${totalCoins}`, canvas.width/2 + 120, canvas.height/2 - 70);
+
+        ctx.fillStyle = '#888888'; ctx.font = 'bold 14px "Orbitron"'; ctx.fillText('[M] MARKET', canvas.width/2, canvas.height/2 - 40);
+
+        if (!shopOpenFromMenu && !showDevModal) {
+            const btnW=280, btnH=50, btnGap=20, startY=canvas.height/2 - 10;
+            uiButtons.menuPlay = { x:(canvas.width-btnW)/2, y:startY, w:btnW, h:btnH };
+            uiButtons.menuShop = { x:(canvas.width-btnW)/2, y:startY+(btnH+btnGap), w:btnW, h:btnH };
+            uiButtons.menuSettings = { x:(canvas.width-btnW)/2, y:startY+2*(btnH+btnGap), w:btnW, h:btnH };
+            uiButtons.menuDev = { x:(canvas.width-btnW)/2, y:startY+3*(btnH+btnGap), w:btnW, h:btnH };
+
+            const isPlayHovered = mxIn(uiButtons.menuPlay);
+            const isShopHovered = mxIn(uiButtons.menuShop);
+            const isSettingsHovered = mxIn(uiButtons.menuSettings);
+            const isDevHovered = mxIn(uiButtons.menuDev);
+            drawMenuButton(uiButtons.menuPlay, locale[currentLang].playBtn, isPlayHovered, '#00ff66', '#007f3f');
+            drawMenuButton(uiButtons.menuShop, locale[currentLang].shopBtn, isShopHovered, '#ff007f', '#a30052');
+            drawMenuButton(uiButtons.menuSettings, locale[currentLang].settingsBtn, isSettingsHovered, '#00ffff', '#00a3a3');
+            drawMenuButton(uiButtons.menuDev, locale[currentLang].dev, isDevHovered, '#ffaa00', '#aa7700');
+            ctx.fillStyle = '#443f66'; ctx.font = 'bold 12px "Orbitron"'; ctx.fillText(locale[currentLang].playHint, canvas.width/2, startY+4*(btnH+btnGap)+10);
+        } else if (shopOpenFromMenu) {
+            drawMarketUI();
+        } else if (showDevModal) {
+            drawDevModal();
+        }
+
+        if (isSettingsOpen) {
+            drawSettingsUI();
+
+        // Tutorial modal'ı menüde de göster (showTutorial true ise)
+        if (showTutorial) drawTutorialModal();
+    } else if (gameState === "PLAYING" || gameState === "PAUSED" || gameState === "IN_GAME_SHOP" || gameState === "MENU_SHOP") {
+        ctx.fillStyle = '#0a0314'; ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.strokeStyle='#1d082c'; ctx.lineWidth=2;
+        for (let i=0; i<canvas.width; i+=80) { ctx.beginPath(); ctx.moveTo(i-(camera.x*0.3)%80,0); ctx.lineTo(i-(camera.x*0.3)%80,canvas.height); ctx.stroke(); }
+        platforms.forEach(p => {
+            ctx.save(); ctx.translate(-camera.x,-camera.y);
+            ctx.shadowBlur=15; ctx.fillStyle='#110221'; ctx.strokeStyle='#00ffff'; ctx.shadowColor='#00ffff';
+            ctx.fillRect(p.x,p.y,p.width,p.height); ctx.lineWidth=3; ctx.strokeRect(p.x,p.y,p.width,p.height);
+            ctx.restore();
+        });
+        enemies.forEach(enemy => enemy.draw());
+        coins.forEach(coin => coin.draw());
+        demlik.draw();
+        updateAndDrawBombs();
+        particles.forEach(p => {
+            ctx.save(); ctx.translate(-camera.x,-camera.y);
+            ctx.fillStyle=p.color; ctx.globalAlpha=p.alpha; ctx.fillRect(p.x,p.y,p.radius,p.radius);
+            ctx.restore();
+        });
+        ctx.globalAlpha=1.0;
+        ctx.shadowBlur=0;
+        const segmentW=25, segmentH=15, segmentGap=6, startBarX=30, startBarY=30;
+        ctx.fillStyle='#220011'; ctx.fillRect(startBarX-4,startBarY-4,(segmentW+segmentGap)*demlik.maxHp+8,segmentH+8);
+        ctx.strokeStyle='#ff0055'; ctx.strokeRect(startBarX-4,startBarY-4,(segmentW+segmentGap)*demlik.maxHp+8,segmentH+8);
+        for (let i=0; i<demlik.maxHp; i++) {
+            if (i<demlik.hp) { ctx.fillStyle='#ff0055'; ctx.shadowBlur=10; ctx.shadowColor='#ff0055'; }
+            else { ctx.fillStyle='#440022'; ctx.shadowBlur=0; }
+            ctx.fillRect(startBarX+i*(segmentW+segmentGap), startBarY, segmentW, segmentH);
+        }
+        ctx.shadowBlur=0;
+        ctx.fillStyle='#00ff66'; ctx.font='bold 15px "Orbitron"'; ctx.textAlign='left'; ctx.fillText(`${locale[currentLang].highscore}${highScore}`, startBarX, startBarY+38);
+        ctx.fillStyle='#ffffff'; ctx.fillText(`${locale[currentLang].currentscore}${currentScore}`, startBarX, startBarY+56);
+        ctx.fillStyle='#00ffff'; ctx.font='bold 24px "Orbitron"'; ctx.textAlign='right';
+        let mins=Math.floor(survivalTimer/3600), secs=Math.floor((survivalTimer%3600)/60);
+        ctx.fillText(`${locale[currentLang].survivalTime}${mins.toString().padStart(2,'0')}:${secs.toString().padStart(2,'0')}`, canvas.width-150, 46);
+        ctx.fillStyle='#ffaa00'; ctx.font='bold 20px "Orbitron"'; ctx.textAlign='left';
+        ctx.fillText(`${locale[currentLang].level}${difficultyLevel}`, startBarX, startBarY + 76);
+        
+        ctx.fillStyle='#ffd700'; ctx.font='bold 22px "Orbitron"'; ctx.textAlign='center'; ctx.fillText(`PARA: ${totalCoins}`, canvas.width/2, 46);
+        let cartX=canvas.width-100, cartY=15;
+        uiButtons.gameCart = { x:cartX, y:cartY, w:60, h:42 };
+        ctx.fillStyle='#ff007f'; ctx.strokeStyle='#00ffff'; ctx.lineWidth=2; ctx.shadowBlur=10; ctx.shadowColor='#ff007f';
+        ctx.fillRect(cartX,cartY,60,42); ctx.strokeRect(cartX,cartY,60,42); ctx.shadowBlur=0;
+        drawPixelCart(cartX+30, cartY+21);
+
+        // Yardım butonu (sağ alt)
+        let hx = canvas.width - 56, hy = canvas.height - 56;
+        uiButtons.helpBtn = { x: hx, y: hy, w: 44, h: 44 };
+        ctx.fillStyle = '#00ffff';
+        ctx.shadowBlur = 15; ctx.shadowColor = '#00ffff';
+        ctx.beginPath(); ctx.arc(hx+22, hy+22, 22, 0, Math.PI*2); ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#0a0314';
+        ctx.font = 'bold 28px Arial, sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('!', hx+22, hy+24);
+
+        const staminaBarX = startBarX;
+        const staminaBarY = startBarY + 96;
+        const staminaBarW = 120;
+        const staminaBarH = 10;
+        ctx.fillStyle = '#220011';
+        ctx.fillRect(staminaBarX, staminaBarY, staminaBarW, staminaBarH);
+        ctx.fillStyle = '#00e5ff';
+        ctx.fillRect(staminaBarX, staminaBarY, staminaBarW * (demlik.dashStamina / demlik.dashStaminaMax), staminaBarH);
+        ctx.strokeStyle = '#00ffff';
+        ctx.strokeRect(staminaBarX, staminaBarY, staminaBarW, staminaBarH);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '10px "Orbitron"';
+        ctx.textAlign = 'left';
+        ctx.fillText('DASH', staminaBarX + staminaBarW + 8, staminaBarY + 9);
+
+        if (potionActive) {
+            ctx.fillStyle = '#00ff66';
+            ctx.font = 'bold 14px "Orbitron"';
+            ctx.textAlign = 'left';
+            let remaining = Math.ceil(potionTimer / 60);
+            ctx.fillText('BERGAMOT ' + remaining + 's', startBarX, staminaBarY + 30);
+        }
+
+        if (randomMessageDisplay > 0) {
+            ctx.save();
+            ctx.globalAlpha = Math.min(1, randomMessageDisplay / 30);
+            ctx.fillStyle = '#ffaa00';
+            ctx.font = 'bold 18px "Orbitron"';
+            ctx.textAlign = 'right';
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = '#ffaa00';
+            ctx.fillText(randomMessageText, canvas.width - 40, canvas.height - 60);
+            ctx.restore();
+        } 
+
+        const invW=380, invH=80, invX=(canvas.width-invW)/2, invY=canvas.height-100;
+        ctx.fillStyle='rgba(11,4,25,0.9)'; ctx.strokeStyle='#00ffff'; ctx.lineWidth=2;
+        ctx.fillRect(invX,invY,invW,invH); ctx.strokeRect(invX,invY,invW,invH);
+        const slotSize=64, slotGap=16;
+        inventoryItems.forEach((item,index) => {
+            const sx=invX+22+index*(slotSize+slotGap), sy=invY+8;
+            // Eğer eşya kullanılamıyorsa (sayı 0 veya false) arka planı soluk yap
+            let countVal = typeof item.count === 'function' ? item.count() : item.count;
+            let usable = true;z
+            if (item.id === 'normal') usable = true;
+            else if (item.id === 'bomb') usable = (countVal > 0);
+            else if (item.id === 'diamond') usable = (hasDiamondKatana && diamondDurability > 0);
+            else if (item.id === 'potion') usable = (countVal > 0 && !potionActive);
+            if (index===selectedSlot) { 
+                ctx.fillStyle = usable ? '#1e053a' : '#2a1545';
+                ctx.strokeStyle = usable ? '#ff007f' : '#664488';
+                ctx.lineWidth = 3;
+            } else {
+                ctx.fillStyle = usable ? '#080111' : '#1a1122';
+                ctx.strokeStyle = '#441166';
+                ctx.lineWidth = 1;
+            }
+            ctx.fillRect(sx,sy,slotSize,slotSize); ctx.strokeRect(sx,sy,slotSize,slotSize);
+            if (item.id==='normal') drawPixelWeapon(sx+32, sy+32, '#ffffff');
+            else if (item.id==='bomb') drawPixelBomb(sx+32, sy+32);
+            else if (item.id==='diamond') drawPixelWeapon(sx+32, sy+32, '#00fffc');
+            else if (item.id==='potion') drawPixelPotion(sx+32, sy+32);
+            ctx.fillStyle='#888888'; ctx.font='bold 11px "Orbitron"'; ctx.textAlign='center'; ctx.fillText(`${index+1}`, sx+12, sy+16);
+            ctx.fillStyle='#00ffff'; ctx.font='bold 13px "Orbitron"'; ctx.fillText(countVal, sx+slotSize-12, sy+slotSize-8);
+            if (item.id==='diamond' && hasDiamondKatana && index===selectedSlot) {
+                ctx.fillStyle='#ff1744'; ctx.fillRect(sx+5, sy+slotSize-6, slotSize-10, 3);
+                ctx.fillStyle='#00ffff'; ctx.fillRect(sx+5, sy+slotSize-6, (slotSize-10)*(diamondDurability/100), 3);
+            }
+            // Kullanılamıyorsa kırmızı çarpı
+            if (!usable) {
+                ctx.strokeStyle = '#ff3333';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(sx+8, sy+8);
+                ctx.lineTo(sx+slotSize-8, sy+slotSize-8);
+                ctx.moveTo(sx+slotSize-8, sy+8);
+                ctx.lineTo(sx+8, sy+slotSize-8);
+                ctx.stroke();
+            }
+        });
+
+        if (gameState === "PAUSED") {
+            ctx.fillStyle='rgba(5,1,15,0.88)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+            const pW=380, pH=450, pX=(canvas.width-pW)/2, pY=(canvas.height-pH)/2;
+            ctx.fillStyle='#100520'; ctx.strokeStyle='#00ffff'; ctx.lineWidth=3; ctx.shadowBlur=20; ctx.shadowColor='#00ffff';
+            ctx.fillRect(pX,pY,pW,pH); ctx.strokeRect(pX,pY,pW,pH); ctx.shadowBlur=0;
+            ctx.fillStyle='#ffffff'; ctx.font='bold 24px "Orbitron"'; ctx.textAlign='center'; ctx.fillText(locale[currentLang].paused, canvas.width/2, pY+45);
+            
+            const btnW=240, btnH=40, btnGap=14, startBtnY=pY+80;
+            
+            if (showInGameSettings) {
+                ctx.fillStyle='#888888'; ctx.font='16px "Orbitron"'; ctx.fillText(locale[currentLang].volume, canvas.width/2, pY+120);
+                let barW=240, barH=12, barX=(canvas.width-barW)/2, barY=pY+140;
+                uiButtons.volumeBar = { x:barX, y:barY, w:barW, h:barH };
+                ctx.fillStyle='#331155'; ctx.fillRect(barX,barY,barW,barH);
+                ctx.fillStyle='#00ffff'; ctx.fillRect(barX,barY,barW*musicVolume,barH);
+                ctx.beginPath(); ctx.arc(barX+barW*musicVolume, barY+barH/2, 13, 0, Math.PI*2); ctx.fill();
+                
+                ctx.fillStyle='#888888'; ctx.font='16px "Orbitron"'; ctx.fillText(locale[currentLang].sfx, canvas.width/2, pY+195);
+                let sbarW=240, sbarH=12, sbarX=(canvas.width-sbarW)/2, sbarY=pY+215;
+                uiButtons.sfxBar = { x:sbarX, y:sbarY, w:sbarW, h:sbarH };
+                ctx.fillStyle='#331155'; ctx.fillRect(sbarX,sbarY,sbarW,sbarH);
+                ctx.fillStyle='#ff00ff'; ctx.fillRect(sbarX,sbarY,sbarW*sfxVolume,sbarH);
+                ctx.beginPath(); ctx.arc(sbarX+sbarW*sfxVolume, sbarY+sbarH/2, 13, 0, Math.PI*2); ctx.fill();
+
+                let cW=120,cH=38,cX=(canvas.width-cW)/2,cY=pY+280;
+                uiButtons.closeBtn = { x:cX, y:cY, w:cW, h:cH };
+                ctx.fillStyle='#ff0055'; ctx.fillRect(cX,cY,cW,cH); ctx.fillStyle='#ffffff'; ctx.font='bold 14px "Orbitron"'; ctx.fillText(locale[currentLang].close, canvas.width/2, cY+24);
+            } else {
+                uiButtons.pauseResume = { x:(canvas.width-btnW)/2, y:startBtnY, w:btnW, h:btnH };
+                ctx.fillStyle='#00ff66'; ctx.fillRect(uiButtons.pauseResume.x,uiButtons.pauseResume.y,btnW,btnH);
+                ctx.fillStyle='#000000'; ctx.font='bold 14px "Orbitron"'; ctx.fillText(locale[currentLang].resume, canvas.width/2, startBtnY+26);
+                
+                uiButtons.pauseSettings = { x:(canvas.width-btnW)/2, y:startBtnY+(btnH+btnGap), w:btnW, h:btnH };
+                ctx.fillStyle='#1b072e'; ctx.strokeStyle='#00ffff'; ctx.lineWidth=1; ctx.fillRect(uiButtons.pauseSettings.x,uiButtons.pauseSettings.y,btnW,btnH); ctx.strokeRect(uiButtons.pauseSettings.x,uiButtons.pauseSettings.y,btnW,btnH);
+                ctx.fillStyle='#ffffff'; ctx.fillText('SES AYARLARI', canvas.width/2, startBtnY+(btnH+btnGap)+26);
+                
+                uiButtons.pauseMute = { x:(canvas.width-btnW)/2, y:startBtnY+2*(btnH+btnGap), w:btnW, h:btnH };
+                ctx.fillStyle='#1b072e'; ctx.strokeStyle='#00ffff'; ctx.lineWidth=1; ctx.fillRect(uiButtons.pauseMute.x,uiButtons.pauseMute.y,btnW,btnH); ctx.strokeRect(uiButtons.pauseMute.x,uiButtons.pauseMute.y,btnW,btnH);
+                ctx.fillStyle='#ffffff'; ctx.fillText(`${locale[currentLang].music}${isMuted?'KAPALI/OFF':'AÇIK/ON'}`, canvas.width/2, startBtnY+2*(btnH+btnGap)+26);
+                
+                uiButtons.pauseLang = { x:(canvas.width-btnW)/2, y:startBtnY+3*(btnH+btnGap), w:btnW, h:btnH };
+                ctx.fillStyle='#1b072e'; ctx.fillRect(uiButtons.pauseLang.x,uiButtons.pauseLang.y,btnW,btnH); ctx.strokeRect(uiButtons.pauseLang.x,uiButtons.pauseLang.y,btnW,btnH);
+                ctx.fillStyle='#ffffff'; ctx.fillText(`${locale[currentLang].lang}${currentLang}`, canvas.width/2, startBtnY+3*(btnH+btnGap)+26);
+                
+                uiButtons.pauseMenu = { x:(canvas.width-btnW)/2, y:startBtnY+4*(btnH+btnGap), w:btnW, h:btnH };
+                ctx.fillStyle='#ff0055'; ctx.fillRect(uiButtons.pauseMenu.x,uiButtons.pauseMenu.y,btnW,btnH);
+                ctx.fillStyle='#ffffff'; ctx.fillText(locale[currentLang].mainMenu, canvas.width/2, startBtnY+4*(btnH+btnGap)+26);
+            }
+        }
+
+        if (gameState === "IN_GAME_SHOP" || (gameState === "MENU_SHOP")) {
+            drawMarketUI();
+        }
+
+        // Tutorial modal'ı oyun içinde de göster
+        if (showTutorial) drawTutorialModal();
+    } else if (gameState === "GAMEOVER") {
+        ctx.fillStyle='#000000'; ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.fillStyle = '#ff1744';
+        ctx.font='bold 44px "Orbitron"'; ctx.textAlign='center';
+        ctx.fillText(locale[currentLang].failed, canvas.width/2, canvas.height/2-30);
+        ctx.fillStyle='#ffffff'; ctx.font='bold 16px "Orbitron"'; ctx.fillText(locale[currentLang].restart, canvas.width/2, canvas.height/2+30);
+    }
+    if (gameState === "CHEAT_PANEL") {
+        ctx.fillStyle='rgba(5,1,15,0.95)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+        const chW=500, chH=180, chX=(canvas.width-chW)/2, chY=(canvas.height-chH)/2;
+        ctx.fillStyle='#05010b'; ctx.strokeStyle='#00ff66'; ctx.lineWidth=3; ctx.shadowBlur=20; ctx.shadowColor='#00ff66';
+        ctx.fillRect(chX,chY,chW,chH); ctx.strokeRect(chX,chY,chW,chH); ctx.shadowBlur=0;
+        ctx.fillStyle='#00ff66'; ctx.font='bold 16px "Orbitron"'; ctx.textAlign='left';
+        ctx.fillText("TERMINAL HILE SISTEMI > STATUS: READY", chX+25, chY+35);
+        ctx.fillText("LUTFEN KOD GIRINIZ:", chX+25, chY+70);
+        ctx.fillStyle='#110221'; ctx.fillRect(chX+25, chY+90, chW-50, 40);
+        ctx.strokeStyle='#00ff66'; ctx.strokeRect(chX+25, chY+90, chW-50, 40);
+        ctx.fillStyle='#ffffff'; ctx.font='bold 18px "Orbitron"';
+        ctx.fillText(cheatCodeInput + (Math.floor(Date.now()/300)%2===0 ? "_" : ""), chX+40, chY+115);
+    }
+}
+
+// --- TUTORIAL MODAL (okunaklı font) ---
+function drawTutorialModal() {
+    ctx.fillStyle = 'rgba(0,0,0,0.88)';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    const pw = 650, ph = 500, px = (canvas.width-pw)/2, py = (canvas.height-ph)/2;
+    ctx.fillStyle = '#100520';
+    ctx.strokeStyle = '#00ffff';
+    ctx.lineWidth = 3;
+    ctx.shadowBlur = 25;
+    ctx.shadowColor = '#00ffff';
+    ctx.fillRect(px,py,pw,ph);
+    ctx.strokeRect(px,py,pw,ph);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 30px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('HOŞ GELDİN!', canvas.width/2, py+55);
+    ctx.font = '18px Arial, sans-serif';
+    ctx.textAlign = 'left';
+    const controls = [
+        'Saldırı (sol) : Sol Fare Tik  veya Q',
+        'Saldırı (sağ) : E',
+        'Zıplama : SPACE',
+        'Hareket : A / D  veya Yön Tuşları',
+        'Hızlı kaçış (Dash) : SHIFT (dayanıklılık var)',
+        'Eşya değiştir : 1-4  veya  Fare Tekerleği',
+        'Market : M tuşu',
+        'Duraklat / Menü : ESC'
+    ];
+    controls.forEach((text, i) => {
+        ctx.fillStyle = '#cccccc';
+        ctx.fillText(text, px+35, py+105 + i*34);
+    });
+    // Kapat butonu
+    const btnW = 180, btnH = 46, btnX = (canvas.width-btnW)/2, btnY = py+ph-75;
+    ctx.fillStyle = '#ff0055';
+    ctx.fillRect(btnX, btnY, btnW, btnH);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 20px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('ANLADIM!', canvas.width/2, btnY+32);
+    uiButtons.tutorialClose = {x:btnX, y:btnY, w:btnW, h:btnH};
+}
+
+// --- GELİŞTİRİCİ MODAL (okunaklı font) ---
+function drawDevModal() {
+    ctx.fillStyle = 'rgba(0,0,0,0.88)';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    const pw = 620, ph = 420, px = (canvas.width-pw)/2, py = (canvas.height-ph)/2;
+    ctx.fillStyle = '#100520';
+    ctx.strokeStyle = '#ffaa00';
+    ctx.lineWidth = 3;
+    ctx.shadowBlur = 25;
+    ctx.shadowColor = '#ffaa00';
+    ctx.fillRect(px,py,pw,ph);
+    ctx.strokeRect(px,py,pw,ph);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 26px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('GELİŞTİRİCİLER', canvas.width/2, py+50);
+    ctx.font = '17px Arial, sans-serif';
+    ctx.textAlign = 'left';
+    const lines = [
+        'Bu muazzam ötesi dahiyane oyun',
+        'CMS Team sahibi Oshi ( İsmail DEMİRCAN )',
+        'tarafından yapılmıştır.',
+        '',
+        'İşte diğer projelerimiz:'
+    ];
+    lines.forEach((text, i) => {
+        ctx.fillStyle = '#d0d0d0';
+        ctx.fillText(text, px+40, py+100 + i*32);
+    });
+    // Linkler
+    const linkY = py+100 + 5*32 + 10;
+    ctx.fillStyle = '#00ccff';
+    ctx.font = 'bold 20px Arial, sans-serif';
+    ctx.textAlign = 'left';
+    // TeaTube
+    const link1 = { x: px+40, y: linkY, w: 240, h: 30 };
+    ctx.fillText('TeaTube ( teatube.xyz )', link1.x, link1.y+26);
+    uiButtons.devLink1 = link1;
+    // Defterdar
+    const link2 = { x: px+40, y: linkY+44, w: 260, h: 30 };
+    ctx.fillText('Defterdar ( defterdar.xyz )', link2.x, link2.y+26);
+    uiButtons.devLink2 = link2;
+    // Kapat
+    const btnW = 160, btnH = 46, btnX = (canvas.width-btnW)/2, btnY = py+ph-70;
+    ctx.fillStyle = '#ff0055';
+    ctx.fillRect(btnX, btnY, btnW, btnH);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 20px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('KAPAT', canvas.width/2, btnY+32);
+    uiButtons.closeBtn = {x:btnX, y:btnY, w:btnW, h:btnH};
+}
+
+function drawMarketUI() {
+    ctx.fillStyle='rgba(5,1,15,0.8)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    const panelW=760, panelH=360, panelX=(canvas.width-panelW)/2, panelY=(canvas.height-panelH)/2;
+    ctx.fillStyle='#100520'; ctx.strokeStyle='#ff007f'; ctx.lineWidth=3; ctx.shadowBlur=20; ctx.shadowColor='#ff007f';
+    ctx.fillRect(panelX,panelY,panelW,panelH); ctx.strokeRect(panelX,panelY,panelW,panelH); ctx.shadowBlur=0;
+    ctx.fillStyle='#ffffff'; ctx.font='bold 24px "Orbitron"'; ctx.textAlign='center'; ctx.fillText(locale[currentLang].shopTitle, canvas.width/2, panelY+45);
+    ctx.fillStyle='#ffd700'; ctx.font='bold 18px "Orbitron"'; ctx.fillText(`PARA: ${totalCoins}`, canvas.width/2, panelY+75);
+    const totalItems=shopItems.length, itemGap=30, startX=panelX+(panelW-(totalItems*200+(totalItems-1)*itemGap))/2;
+    shopItems.forEach((item,index) => {
+        item.x=startX+index*(item.w+itemGap); item.y=panelY+110;
+        ctx.fillStyle='#1b072e'; ctx.strokeStyle='#00ffff'; ctx.lineWidth=2; ctx.fillRect(item.x,item.y,item.w,item.h); ctx.strokeRect(item.x,item.y,item.w,item.h);
+        if (item.id==='bomb') drawPixelBomb(item.x+30, item.y+45);
+        else if (item.id==='diamond') drawPixelWeapon(item.x+30, item.y+45, '#00fffc');
+        else if (item.id==='potion') drawPixelPotion(item.x+30, item.y+45);
+        ctx.fillStyle='#ffffff'; ctx.font='bold 14px "Orbitron"'; ctx.textAlign='left'; ctx.fillText(item.name, item.x+65, item.y+35);
+        ctx.fillStyle='#ffd700'; ctx.font='bold 13px "Orbitron"';
+        if (item.id==='diamond' && hasDiamondKatana) { ctx.fillStyle='#00ffff'; ctx.fillText(`%${diamondDurability}`, item.x+65, item.y+60); }
+        else { ctx.fillText(`${item.cost} PARA`, item.x+65, item.y+60); }
+    });
+    let cW=120,cH=38,cX=(canvas.width-cW)/2,cY=panelY+290;
+    uiButtons.closeBtn = { x:cX, y:cY, w:cW, h:cH };
+    ctx.fillStyle='#ff0055'; ctx.fillRect(cX,cY,cW,cH); ctx.fillStyle='#ffffff'; ctx.font='bold 14px "Orbitron"'; ctx.textAlign='center'; ctx.fillText(locale[currentLang].close, canvas.width/2, cY+24);
+}
+
+function drawSettingsUI() {
+    ctx.fillStyle = 'rgba(10,3,22,0.95)'; ctx.strokeStyle='#00ffff'; ctx.lineWidth=3; ctx.shadowBlur=20; ctx.shadowColor='#00ffff';
+    const panelW=420, panelH=360, panelX=(canvas.width-panelW)/2, panelY=(canvas.height-panelH)/2;
+    ctx.fillRect(panelX,panelY,panelW,panelH); ctx.strokeRect(panelX,panelY,panelW,panelH); ctx.shadowBlur=0;
+    ctx.fillStyle='#ffffff'; ctx.font='bold 24px "Orbitron"'; ctx.fillText(locale[currentLang].settingsTitle, canvas.width/2, panelY+45);
+    
+    ctx.fillStyle='#888888'; ctx.font='16px "Orbitron"'; ctx.fillText(locale[currentLang].volume, canvas.width/2, panelY+95);
+    let barW=200, barH=10, barX=(canvas.width-barW)/2, barY=panelY+115;
+    uiButtons.volumeBar = { x:barX, y:barY, w:barW, h:barH };
+    ctx.fillStyle='#331155'; ctx.fillRect(barX,barY,barW,barH);
+    ctx.fillStyle='#00ffff'; ctx.fillRect(barX,barY,barW*musicVolume,barH);
+    ctx.beginPath(); ctx.arc(barX+barW*musicVolume, barY+barH/2, 11, 0, Math.PI*2); ctx.fill();
+    
+    ctx.fillStyle='#888888'; ctx.font='16px "Orbitron"'; ctx.fillText(locale[currentLang].sfx, canvas.width/2, panelY+165);
+    let sbarW=200, sbarH=10, sbarX=(canvas.width-sbarW)/2, sbarY=panelY+185;
+    uiButtons.sfxBar = { x:sbarX, y:sbarY, w:sbarW, h:sbarH };
+    ctx.fillStyle='#331155'; ctx.fillRect(sbarX,sbarY,sbarW,sbarH);
+    ctx.fillStyle='#ff00ff'; ctx.fillRect(sbarX,sbarY,sbarW*sfxVolume,sbarH);
+    ctx.beginPath(); ctx.arc(sbarX+sbarW*sfxVolume, sbarY+sbarH/2, 11, 0, Math.PI*2); ctx.fill();
+
+    let lBtnW=160,lBtnH=38,lBtnX=(canvas.width-lBtnW)/2,lBtnY=panelY+225;
+    uiButtons.langBtn = { x:lBtnX, y:lBtnY, w:lBtnW, h:lBtnH };
+    ctx.fillStyle='#1b072e'; ctx.strokeStyle='#ff007f'; ctx.fillRect(lBtnX,lBtnY,lBtnW,lBtnH); ctx.strokeRect(lBtnX,lBtnY,lBtnW,lBtnH);
+    ctx.fillStyle='#ffffff'; ctx.font='bold 14px "Orbitron"'; ctx.fillText(currentLang==='TR'?'DİL: TÜRKÇE':'LANG: ENGLISH', canvas.width/2, lBtnY+24);
+
+    let cBtnW=110,cBtnH=38,cBtnX=(canvas.width-cBtnW)/2,cBtnY=panelY+290;
+    uiButtons.closeBtn = { x:cBtnX, y:cBtnY, w:cBtnW, h:cBtnH };
+    ctx.fillStyle='#ff0055'; ctx.fillRect(cBtnX,cBtnY,cBtnW,cBtnH); ctx.fillStyle='#ffffff'; ctx.fillText(locale[currentLang].close, canvas.width/2, cBtnY+24);
+}
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>
